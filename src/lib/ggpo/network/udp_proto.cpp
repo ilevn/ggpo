@@ -21,24 +21,29 @@ static const int UDP_SHUTDOWN_TIMER = 5000;
 static const int MAX_SEQ_DISTANCE = (1 << 15);
 
 UdpProtocol::UdpProtocol() :
-   _local_frame_advantage(0),
-   _remote_frame_advantage(0),
-   _queue(-1),
+   _udp(NULL),
    _magic_number(0),
+   _queue(-1),
    _remote_magic_number(0),
+   _connected(false),
+   _round_trip_time(0),
    _packets_sent(0),
    _bytes_sent(0),
+   _kbps_sent(0),
    _stats_start_time(0),
+   _local_connect_status(NULL),
+   _current_state(Syncing),
+   _local_frame_advantage(0),
+   _remote_frame_advantage(0),
    _last_send_time(0),
+   _last_recv_time(0),
    _shutdown_timeout(0),
+   _disconnect_event_sent(false),
    _disconnect_timeout(0),
    _disconnect_notify_start(0),
    _disconnect_notify_sent(false),
-   _disconnect_event_sent(false),
-   _connected(false),
    _next_send_seq(0),
-   _next_recv_seq(0),
-   _udp(NULL)
+   _next_recv_seq(0)
 {
    _last_sent_input.init(-1, NULL, 1);
    _last_received_input.init(-1, NULL, 1);
@@ -93,15 +98,19 @@ UdpProtocol::SendInput(GameInput &input)
           */
          _timesync.advance_frame(input, _local_frame_advantage, _remote_frame_advantage);
 
-         /*
-          * Save this input packet
-          *
-          * XXX: This queue may fill up for spectators who do not ack input packets in a timely
-          * manner.  When this happens, we can either resize the queue (ug) or disconnect them
-          * (better, but still ug).  For the meantime, make this queue really big to decrease
-          * the odds of this happening...
-          */
-         _pending_output.push(input);
+         // An unresponsive spectator must not crash the host or silently lose
+         // inputs. Report a disconnection before the bounded queue overflows.
+         // The same policy protects a peer if its acknowledgements stop.
+         if (_pending_output.full()) {
+            Log("Input acknowledgement backlog exhausted; disconnecting endpoint.\n");
+            Disconnect();
+            if (!_disconnect_event_sent) {
+               QueueEvent(Event(Event::Disconnected));
+               _disconnect_event_sent = true;
+            }
+         } else {
+            _pending_output.push(input);
+         }
       }
       SendPendingOutput();
    }  
@@ -115,7 +124,15 @@ UdpProtocol::SendPendingOutput()
    uint8 *bits;
    GameInput last;
 
-   if (_pending_output.size()) {
+   // MAX_COMPRESSED_BITS names the byte array size, not its bit capacity.
+   // Leave room for the packed header in the transport's receive buffer too.
+   const int input_header_size = (int)((char *)msg->u.input.bits - (char *)msg);
+   const int max_bits = MIN((int)sizeof(msg->u.input.bits),
+                            MAX_UDP_PACKET_SIZE - input_header_size) * 8;
+
+   // The receiver stops using input after the disconnect notification. Sending
+   // the backlog as well can exhaust its event queue (disconnect + 63 frames).
+   if (_current_state != Disconnected && _pending_output.size()) {
       last = _last_acked_input;
       bits = msg->u.input.bits;
 
@@ -125,6 +142,19 @@ UdpProtocol::SendPendingOutput()
       ASSERT(last.frame == -1 || last.frame + 1 == msg->u.input.start_frame);
       for (j = 0; j < _pending_output.size(); j++) {
          GameInput &current = _pending_output.item(j);
+         // Include the frame terminator and reserve the entire delta before
+         // writing it. Keep remaining frames queued until acknowledgements
+         // advance the compression baseline; never split a delta across packets.
+         int frame_bits = 1;
+         for (i = 0; i < current.size * 8; i++) {
+            if (current.value(i) != last.value(i)) {
+               frame_bits += 2 + BITVECTOR_NIBBLE_SIZE;
+            }
+         }
+         ASSERT(frame_bits <= max_bits);
+         if (frame_bits > max_bits - offset) {
+            break;
+         }
          if (memcmp(current.bits, last.bits, current.size) != 0) {
             ASSERT((GAMEINPUT_MAX_BYTES * GAMEINPUT_MAX_PLAYERS * 8) < (1 << BITVECTOR_NIBBLE_SIZE));
             for (i = 0; i < current.size * 8; i++) {
@@ -153,7 +183,8 @@ UdpProtocol::SendPendingOutput()
       memset(msg->u.input.peer_connect_status, 0, sizeof(UdpMsg::connect_status) * UDP_MSG_MAX_PLAYERS);
    }
 
-   ASSERT(offset < MAX_COMPRESSED_BITS);
+   ASSERT(offset <= max_bits);
+   ASSERT(msg->PacketSize() <= MAX_UDP_PACKET_SIZE);
 
    SendMsg(msg);
 }
@@ -294,7 +325,7 @@ UdpProtocol::HandlesMsg(sockaddr_in &from,
    if (!_udp) {
       return false;
    }
-   return _peer_addr.sin_addr.S_un.S_addr == from.sin_addr.S_un.S_addr &&
+   return _peer_addr.sin_addr.s_addr == from.sin_addr.s_addr &&
           _peer_addr.sin_port == from.sin_port;
 }
 
@@ -351,26 +382,22 @@ UdpProtocol::OnMsg(UdpMsg *msg, int len)
 void
 UdpProtocol::UpdateNetworkStats(void)
 {
-   int now = Platform::GetCurrentTimeMS();
-
-   if (_stats_start_time == 0) {
-      _stats_start_time = now;
+   unsigned int now = Platform::GetCurrentTimeMS();
+   if (_stats_start_time == 0) _stats_start_time = now;
+   unsigned int elapsed = now - _stats_start_time;
+   // The first sync packet can arrive in the same millisecond as startup.
+   if (!elapsed || !_bytes_sent) {
+      _kbps_sent = 0;
+      return;
    }
-
-   int total_bytes_sent = _bytes_sent + (UDP_HEADER_SIZE * _packets_sent);
-   float seconds = (float)((now - _stats_start_time) / 1000.0);
-   float Bps = total_bytes_sent / seconds;
-   float udp_overhead = (float)(100.0 * (UDP_HEADER_SIZE * _packets_sent) / _bytes_sent);
-
-   _kbps_sent = int(Bps / 1024);
-
+   double total_bytes_sent = static_cast<double>(_bytes_sent) + UDP_HEADER_SIZE * static_cast<double>(_packets_sent);
+   double seconds = elapsed / 1000.0;
+   double overhead = 100.0 * UDP_HEADER_SIZE * static_cast<double>(_packets_sent) / _bytes_sent;
+   _kbps_sent = static_cast<int>(total_bytes_sent / seconds / 1024);
    Log("Network Stats -- Bandwidth: %.2f KBps   Packets Sent: %5d (%.2f pps)   "
        "KB Sent: %.2f    UDP Overhead: %.2f %%.\n",
-       _kbps_sent, 
-       _packets_sent,
-       (float)_packets_sent * 1000 / (now - _stats_start_time),
-       total_bytes_sent / 1024.0,
-       udp_overhead);
+       static_cast<double>(_kbps_sent), _packets_sent, _packets_sent / seconds,
+       total_bytes_sent / 1024.0, overhead);
 }
 
 
@@ -405,12 +432,12 @@ UdpProtocol::Log(const char *fmt, ...)
    size_t offset;
    va_list args;
 
-   sprintf_s(buf, ARRAY_SIZE(buf), "udpproto%d | ", _queue);
+   snprintf(buf, ARRAY_SIZE(buf), "udpproto%d | ", _queue);
    offset = strlen(buf);
    va_start(args, fmt);
    vsnprintf(buf + offset, ARRAY_SIZE(buf) - offset - 1, fmt, args);
    buf[ARRAY_SIZE(buf)-1] = '\0';
-   ::Log(buf);
+   ::Log("%s", buf);
    va_end(args);
 }
 
@@ -442,7 +469,7 @@ UdpProtocol::LogMsg(const char *prefix, UdpMsg *msg)
       Log("%s input ack.\n", prefix);
       break;
    default:
-      ASSERT(FALSE && "Unknown UdpMsg type.");
+      ASSERT(false && "Unknown UdpMsg type.");
    }
 }
 
@@ -459,7 +486,7 @@ UdpProtocol::LogEvent(const char *prefix, const UdpProtocol::Event &evt)
 bool
 UdpProtocol::OnInvalid(UdpMsg *msg, int len)
 {
-   ASSERT(FALSE && "Invalid msg in UdpProtocol");
+   ASSERT(false && "Invalid msg in UdpProtocol");
    return false;
 }
 

@@ -22,6 +22,7 @@ public:
 
 
 public:
+   bool IsValid() const { return _udp.IsValid(); }
    virtual GGPOErrorCode DoPoll(int timeout);
    virtual GGPOErrorCode AddPlayer(GGPOPlayer *player, GGPOPlayerHandle *handle);
    virtual GGPOErrorCode AddLocalInput(GGPOPlayerHandle player, void *values, int size);

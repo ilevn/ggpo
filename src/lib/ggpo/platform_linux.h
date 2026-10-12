@@ -9,19 +9,22 @@
 #define _GGPO_LINUX_H_
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdarg.h>
 #include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <unistd.h>
-#include <stdlib.h>
 
 class Platform {
-public:  // types
+public:
    typedef pid_t ProcessID;
-
-public:  // functions
    static ProcessID GetProcessID() { return getpid(); }
-   static void AssertFailed(char *msg) { }
-   static uint32 GetCurrentTimeMS();
+   static void AssertFailed(const char *msg) { fprintf(stderr, "%s\n", msg); }
+   static unsigned int GetCurrentTimeMS();
+   static int GetConfigInt(const char *name);
+   static bool GetConfigBool(const char *name);
+   static void SleepMS(unsigned int milliseconds);
 };
-
 #endif

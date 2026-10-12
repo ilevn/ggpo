@@ -46,6 +46,10 @@ public:
       return _size;
    }
 
+   bool full() {
+      return _size == N - 1;
+   }
+
    bool empty() {
       return _size == 0;
    }

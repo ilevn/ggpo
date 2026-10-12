@@ -1,10 +1,12 @@
-cmake_minimum_required(VERSION 3.2)
+cmake_minimum_required(VERSION 3.15)
 
 # TODO: SDK Versioning.
 project(GGPO VERSION 1.0.0)
 
-# Remove RelWithDebInfo and MinSizeRelease build types to match the original Visual Studio Project. 
-set(CMAKE_CONFIGURATION_TYPES "Debug;Release" CACHE STRING "" FORCE)
+
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 include(src/cmake/properties.cmake)
 include(src/cmake/helper_methods.cmake)
@@ -17,6 +19,16 @@ if(WIN32)
 endif()
 
 # What do we want to build?
+option(GGPO_BUILD_TESTS "Build headless Linux tests" OFF)
+option(GGPO_SANITIZERS "Enable address and undefined behavior sanitizers" OFF)
+if(GGPO_SANITIZERS)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" OR NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        message(FATAL_ERROR "GGPO_SANITIZERS requires GCC or Clang on Linux")
+    endif()
+    add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address,undefined)
+endif()
+
 option(GGPO_BUILD_SDK "Enable the build of the GGPO SDK" ON)
 option(GGPO_BUILD_VECTORWAR "Enable the build of the Vector War example app" ON)
 option(BUILD_SHARED_LIBS "Enable the build of shared libraries (.dll/.so) instead of static ones (.lib/.a)" ON)
@@ -32,4 +44,12 @@ if(GGPO_BUILD_VECTORWAR)
 	else()
 		message(WARNING "The Vector War app only supports Windows, skipping...")
 	endif()
+endif()
+
+if(GGPO_BUILD_TESTS)
+    if(NOT GGPO_BUILD_SDK OR NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        message(FATAL_ERROR "Headless tests require the SDK and Linux")
+    endif()
+    enable_testing()
+    add_subdirectory(tests)
 endif()

@@ -13,7 +13,7 @@ function(add_common_flags target)
 			set_property(TARGET ${target} APPEND PROPERTY COMPILE_OPTIONS $<$<CONFIG:Debug>:/Zi>)
 		endif()
 		
-		set_property(TARGET ${target} APPEND PROPERTY COMPILE_OPTIONS $<$<CONFIG:Release>:/Gy /Zi /O2 /Oi /MT -DNDEBUG>)
+		set_property(TARGET ${target} APPEND PROPERTY COMPILE_OPTIONS $<$<CONFIG:Release>:/Gy /Zi /O2 /Oi -DNDEBUG>)
 	else()
 		# TODO_OTHER_COMPILERS_GO_HERE
 	endif()

@@ -61,7 +61,7 @@ public:
    bool GetEvent(Event &e);
 
 protected:
-   friend SyncTestBackend;
+   friend class SyncTestBackend;
 
    struct SavedFrame {
       byte    *buf;

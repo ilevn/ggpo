@@ -6,18 +6,35 @@
  */
 
 #include "platform_linux.h"
+#include <time.h>
+#include <errno.h>
+#include <strings.h>
+#include <stdint.h>
 
-struct timespec start = { 0 }
-
-uint32 Platform::GetCurrentTimeMS() {
-    if (start.tv_sec == 0 && start.tv_nsec == 0) {
-        clock_gettime(CLOCK_MONOTONIC, &start);
-        return 0
-    }
-    struct timespec current;
-    clock_gettime(CLOCK_MONOTONIC, &current);
-
-    return ((current.tv_sec - start.tv_sec) * 1000) +
-           ((current.tv_nsec  - start.tv_nsec ) / 1000000) +
+unsigned int Platform::GetCurrentTimeMS()
+{
+   struct timespec now;
+   if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+      perror("clock_gettime");
+      abort();
+   }
+   return static_cast<unsigned int>(static_cast<uint64_t>(now.tv_sec) * 1000 + now.tv_nsec / 1000000);
 }
 
+int Platform::GetConfigInt(const char *name)
+{
+   const char *value = getenv(name);
+   return value ? atoi(value) : 0;
+}
+
+bool Platform::GetConfigBool(const char *name)
+{
+   const char *value = getenv(name);
+   return value && (atoi(value) != 0 || strcasecmp(value, "true") == 0);
+}
+
+void Platform::SleepMS(unsigned int milliseconds)
+{
+   struct timespec remaining = { milliseconds / 1000, (milliseconds % 1000) * 1000000L };
+   while (nanosleep(&remaining, &remaining) != 0 && errno == EINTR) {}
+}

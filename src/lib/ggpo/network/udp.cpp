@@ -5,121 +5,116 @@
  * in the LICENSE file.
  */
 
+/* POSIX/Windows UDP transport. Packet encoding remains in udp_proto. */
 #include "types.h"
 #include "udp.h"
+#ifndef _WIN32
+#include <errno.h>
+#include <fcntl.h>
+#endif
 
-SOCKET
-CreateSocket(uint16 bind_port, int retries)
+namespace {
+#ifdef _WIN32
+const ggpo_socket invalid_socket = INVALID_SOCKET;
+int socket_error() { return WSAGetLastError(); }
+bool would_block(int e) { return e == WSAEWOULDBLOCK; }
+bool interrupted(int e) { return e == WSAEINTR; }
+void close_socket(ggpo_socket s) { closesocket(s); }
+#else
+const ggpo_socket invalid_socket = -1;
+int socket_error() { return errno; }
+bool would_block(int e) { return e == EAGAIN || e == EWOULDBLOCK; }
+bool interrupted(int e) { return e == EINTR; }
+void close_socket(ggpo_socket s) { close(s); }
+#endif
+
+ggpo_socket CreateSocket(uint16 port)
 {
-   SOCKET s;
-   sockaddr_in sin;
-   uint16 port;
+   ggpo_socket s = socket(AF_INET, SOCK_DGRAM, 0);
+   if (s == invalid_socket) return s;
+#ifdef _WIN32
    int optval = 1;
-
-   s = socket(AF_INET, SOCK_DGRAM, 0);
-   setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&optval, sizeof optval);
-   setsockopt(s, SOL_SOCKET, SO_DONTLINGER, (const char *)&optval, sizeof optval);
-
-   // non-blocking...
-   u_long iMode = 1;
-   ioctlsocket(s, FIONBIO, &iMode);
-
-   sin.sin_family = AF_INET;
-   sin.sin_addr.s_addr = htonl(INADDR_ANY);
-   for (port = bind_port; port <= bind_port + retries; port++) {
-      sin.sin_port = htons(port);
-      if (bind(s, (sockaddr *)&sin, sizeof sin) != SOCKET_ERROR) {
-         Log("Udp bound to port: %d.\n", port);
-         return s;
-      }
+   // Preserve the original Windows socket options.
+   setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char*)&optval, sizeof(optval));
+   setsockopt(s, SOL_SOCKET, SO_DONTLINGER, (const char*)&optval, sizeof(optval));
+   u_long mode = 1;
+   bool ready = ioctlsocket(s, FIONBIO, &mode) == 0;
+#else
+   // Do not allow a second Linux session to silently steal the same UDP port.
+   int flags = fcntl(s, F_GETFL, 0);
+   bool ready = flags >= 0 && fcntl(s, F_SETFL, flags | O_NONBLOCK) == 0;
+#endif
+   sockaddr_in address;
+   memset(&address, 0, sizeof(address));
+   address.sin_family = AF_INET;
+   address.sin_addr.s_addr = htonl(INADDR_ANY);
+   address.sin_port = htons(port);
+   if (!ready || bind(s, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
+      int error = socket_error();
+      close_socket(s);
+      Log("UDP setup failed on port %d (error %d).\n", port, error);
+      return invalid_socket;
    }
-   closesocket(s);
-   return INVALID_SOCKET;
+   return s;
+}
 }
 
-Udp::Udp() :
-   _socket(INVALID_SOCKET),
-   _callbacks(NULL)
-{
-}
+Udp::Udp() : _socket(invalid_socket), _callbacks(NULL), _poll(NULL) {}
+Udp::~Udp() { if (IsValid()) close_socket(_socket); }
+bool Udp::IsValid() const { return _socket != invalid_socket; }
 
-Udp::~Udp(void)
-{
-   if (_socket != INVALID_SOCKET) {
-      closesocket(_socket);
-      _socket = INVALID_SOCKET;
-   }
-}
-
-void
-Udp::Init(uint16 port, Poll *poll, Callbacks *callbacks)
+void Udp::Init(uint16 port, Poll *poll, Callbacks *callbacks)
 {
    _callbacks = callbacks;
-
    _poll = poll;
-   _poll->RegisterLoop(this);
-
-   Log("binding udp socket to port %d.\n", port);
-   _socket = CreateSocket(port, 0);
+   _socket = CreateSocket(port);
+   if (IsValid()) _poll->RegisterLoop(this);
 }
 
-void
-Udp::SendTo(char *buffer, int len, int flags, struct sockaddr *dst, int destlen)
+void Udp::SendTo(char *buffer, int len, int flags, struct sockaddr *dst, int destlen)
 {
-   struct sockaddr_in *to = (struct sockaddr_in *)dst;
-
-   int res = sendto(_socket, buffer, len, flags, dst, destlen);
-   if (res == SOCKET_ERROR) {
-      DWORD err = WSAGetLastError();
-      Log("unknown error in sendto (erro: %d  wsaerr: %d).\n", res, err);
-      ASSERT(FALSE && "Unknown error in sendto");
+   if (!IsValid()) return;
+   int result;
+   do {
+      result = static_cast<int>(sendto(_socket, buffer, len, flags, dst, destlen));
+   } while (result < 0 && interrupted(socket_error()));
+   if (result < 0) {
+      int error = socket_error();
+      // Transient congestion is equivalent to UDP loss: the protocol retries.
+      if (!would_block(error)) Log("sendto failed (error %d).\n", error);
    }
-   char dst_ip[1024];
-   Log("sent packet length %d to %s:%d (ret:%d).\n", len, inet_ntop(AF_INET, (void *)&to->sin_addr, dst_ip, ARRAY_SIZE(dst_ip)), ntohs(to->sin_port), res);
 }
 
-bool
-Udp::OnLoopPoll(void *cookie)
+bool Udp::OnLoopPoll(void *)
 {
-   uint8          recv_buf[MAX_UDP_PACKET_SIZE];
-   sockaddr_in    recv_addr;
-   int            recv_addr_len;
-
+   if (!IsValid()) return true;
+   uint8 buffer[MAX_UDP_PACKET_SIZE];
+   sockaddr_in from;
    for (;;) {
-      recv_addr_len = sizeof(recv_addr);
-      int len = recvfrom(_socket, (char *)recv_buf, MAX_UDP_PACKET_SIZE, 0, (struct sockaddr *)&recv_addr, &recv_addr_len);
-
-      // TODO: handle len == 0... indicates a disconnect.
-
-      if (len == -1) {
-         int error = WSAGetLastError();
-         if (error != WSAEWOULDBLOCK) {
-            Log("recvfrom WSAGetLastError returned %d (%x).\n", error, error);
-         }
+#ifdef _WIN32
+      int from_len = sizeof(from);
+#else
+      socklen_t from_len = sizeof(from);
+#endif
+      int len = static_cast<int>(recvfrom(_socket, reinterpret_cast<char*>(buffer), sizeof(buffer), 0,
+                                         reinterpret_cast<sockaddr*>(&from), &from_len));
+      if (len < 0) {
+         int error = socket_error();
+         if (interrupted(error)) continue;
+         if (!would_block(error)) Log("recvfrom failed (error %d).\n", error);
          break;
-      } else if (len > 0) {
-         char src_ip[1024];
-         Log("recvfrom returned (len:%d  from:%s:%d).\n", len, inet_ntop(AF_INET, (void*)&recv_addr.sin_addr, src_ip, ARRAY_SIZE(src_ip)), ntohs(recv_addr.sin_port) );
-         UdpMsg *msg = (UdpMsg *)recv_buf;
-         _callbacks->OnMsg(recv_addr, msg, len);
-      } 
+      }
+      if (len > 0) _callbacks->OnMsg(from, reinterpret_cast<UdpMsg*>(buffer), len);
    }
    return true;
 }
 
-
-void
-Udp::Log(const char *fmt, ...)
+void Udp::Log(const char *fmt, ...)
 {
-   char buf[1024];
-   size_t offset;
+   char buffer[1024];
    va_list args;
-
-   strcpy_s(buf, "udp | ");
-   offset = strlen(buf);
    va_start(args, fmt);
-   vsnprintf(buf + offset, ARRAY_SIZE(buf) - offset - 1, fmt, args);
-   buf[ARRAY_SIZE(buf)-1] = '\0';
-   ::Log(buf);
+   vsnprintf(buffer, sizeof(buffer), fmt, args);
    va_end(args);
+   ::Log("udp | %s", buffer);
 }

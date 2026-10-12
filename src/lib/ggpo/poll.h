@@ -25,7 +25,10 @@ public:
 class Poll {
 public:
    Poll(void);
+   ~Poll();
+#ifdef _WIN32
    void RegisterHandle(IPollSink *sink, HANDLE h, void *cookie = NULL);
+#endif
    void RegisterMsgLoop(IPollSink *sink, void *cookie = NULL);
    void RegisterPeriodic(IPollSink *sink, int interval, void *cookie = NULL);
    void RegisterLoop(IPollSink *sink, void *cookie = NULL);
@@ -51,11 +54,13 @@ protected:
          PollSinkCb(s, c), interval(i), last_fired(0) { }
    };
 
-   int               _start_time;
+   unsigned int      _start_time;
+#ifdef _WIN32
    int               _handle_count;
    HANDLE            _handles[MAX_POLLABLE_HANDLES];
    PollSinkCb        _handle_sinks[MAX_POLLABLE_HANDLES];
 
+#endif
    StaticBuffer<PollSinkCb, 16>          _msg_sinks;
    StaticBuffer<PollSinkCb, 16>          _loop_sinks;
    StaticBuffer<PollPeriodicSinkCb, 16>  _periodic_sinks;

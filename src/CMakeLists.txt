@@ -6,27 +6,32 @@ add_library(GGPO
 
 add_common_flags(GGPO)
 
-target_include_directories(GGPO PUBLIC
-	$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-	$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/lib/ggpo>
+target_include_directories(GGPO
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/ggpo
 )
 
-if(WIN32)
-	target_compile_options(GGPO PRIVATE "/W4" "/WX")
-	if(BUILD_SHARED_LIBS)
-		# Link to Multimedia API and Winsocks during a shared build.
-		target_link_libraries(GGPO PUBLIC winmm.lib ws2_32.lib)
-		add_definitions(-DGGPO_SHARED_LIB)
-		add_definitions(-DGGPO_SDK_EXPORT)
-	endif()
+if(MSVC)
+    target_compile_options(GGPO PRIVATE /W4 /WX)
+    target_compile_definitions(GGPO PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
+if(WIN32)
+    target_link_libraries(GGPO PUBLIC winmm ws2_32)
+    if(BUILD_SHARED_LIBS)
+        target_compile_definitions(GGPO PUBLIC GGPO_SHARED_LIB PRIVATE GGPO_SDK_EXPORT)
+    endif()
+endif()
+set_target_properties(GGPO PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set_target_properties(GGPO PROPERTIES VERSION ${PROJECT_VERSION})
 
 # Install
 install(
 	DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include
-	DESTINATION ./
+	DESTINATION .
 	FILES_MATCHING
 	PATTERN "*.h"
 	PATTERN "*.hpp"

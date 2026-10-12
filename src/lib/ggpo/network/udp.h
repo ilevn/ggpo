@@ -17,6 +17,12 @@
 
 static const int MAX_UDP_PACKET_SIZE = 4096;
 
+#ifdef _WIN32
+typedef SOCKET ggpo_socket;
+#else
+typedef int ggpo_socket;
+#endif
+
 class Udp : public IPollSink
 {
 public:
@@ -46,10 +52,11 @@ public:
 
 public:
    ~Udp(void);
+   bool IsValid() const;
 
 protected:
    // Network transmission information
-   SOCKET         _socket;
+   ggpo_socket    _socket;
 
    // state management
    Callbacks      *_callbacks;

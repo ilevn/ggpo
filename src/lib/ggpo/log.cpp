@@ -32,10 +32,10 @@ void Logv(const char *fmt, va_list args)
       return;
    }
    if (!logfile) {
-      sprintf_s(logbuf, ARRAY_SIZE(logbuf), "log-%d.log", Platform::GetProcessID());
-      fopen_s(&logfile, logbuf, "w");
+      snprintf(logbuf, ARRAY_SIZE(logbuf), "log-%d.log", Platform::GetProcessID());
+      logfile = fopen(logbuf, "w");
    }
-   Logv(logfile, fmt, args);
+   if (logfile) Logv(logfile, fmt, args);
 }
 
 void Logv(FILE *fp, const char *fmt, va_list args)
@@ -51,9 +51,12 @@ void Logv(FILE *fp, const char *fmt, va_list args)
       fprintf(fp, "%d.%03d : ", t / 1000, t % 1000);
    }
 
-   vfprintf(fp, fmt, args);
+   va_list copy;
+   va_copy(copy, args);
+   vfprintf(fp, fmt, copy);
+   va_end(copy);
    fflush(fp);
    
-   vsprintf_s(logbuf, ARRAY_SIZE(logbuf), fmt, args);
+   vsnprintf(logbuf, ARRAY_SIZE(logbuf), fmt, args);
 }
 

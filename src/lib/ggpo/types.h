@@ -20,7 +20,9 @@
  *   4389 - '!=' : signed/unsigned mismatch
  *   4800 - 'int' : forcing value to bool 'true' or 'false' (performance warning)
  */
+#ifdef _MSC_VER
 #pragma warning(disable: 4018 4100 4127 4201 4389 4800)
+#endif
 
 /*
  * Simple types
@@ -36,14 +38,15 @@ typedef int int32;
 /*
  * Additional headers
  */
-#if defined(_WINDOWS)
+#if defined(_WIN32)
 #  include "platform_windows.h"
-#elif defined(__GNUC__)
+#elif defined(__linux__)
 #  include "platform_linux.h"
 #else
 #  error Unsupported platform
 #endif
 
+#include <cstring>
 #include "log.h"
 
 
@@ -61,7 +64,7 @@ typedef int int32;
          Log("\n");                                         \
          Log("\n");                                         \
          Platform::AssertFailed(assert_buf);                \
-         exit(0);                                           \
+         exit(EXIT_FAILURE);                                \
       }                                                     \
    } while (false)
 

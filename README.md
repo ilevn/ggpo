@@ -14,7 +14,29 @@ This repository contains the code, documentation, and sample applications for th
 
 ## Building
 
-Building GGPO is currently only available on Windows, however efforts are being made to port it to other platforms.
+This branch ports the Tekken rollback fork's GGPO library to x86_64 Linux.
+Windows build support is retained but has not been revalidated after this port.
+Vector War remains Windows-only. Building the modified RPCS3 and testing
+Tekken matches are separate steps.
+
+### Linux
+
+Requires CMake 3.15+, a C++ compiler, and a build tool. The headless tests also
+require Python 3, system zlib development headers, and a C++11-capable compiler;
+the library remains C++98. Use CMake 3.20+ for the `ctest --test-dir` command
+below, or run `ctest` from the build directory with older CTest versions.
+
+```sh
+cmake -S . -B build-linux -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+  -DGGPO_BUILD_VECTORWAR=OFF -DGGPO_BUILD_TESTS=ON
+cmake --build build-linux --parallel 2
+ctest --test-dir build-linux --output-on-failure
+```
+
+Use `-DBUILD_SHARED_LIBS=ON` for a shared library. See [Linux development and
+testing](doc/linux.md) for prerequisites, the full compiler/sanitizer matrix,
+test coverage, and compatibility limits.
 
 ### Windows
 

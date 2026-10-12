@@ -6,6 +6,7 @@
  */
 
 #include "p2p.h"
+#include <climits>
 
 static const int RECOMMENDATION_INTERVAL           = 240;
 static const int DEFAULT_DISCONNECT_TIMEOUT        = 5000;
@@ -161,7 +162,7 @@ Peer2PeerBackend::DoPoll(int timeout)
          }
          // XXX: this is obviously a farce...
          if (timeout) {
-            Sleep(1);
+            Platform::SleepMS(1);
          }
       }
    }
@@ -503,7 +504,8 @@ Peer2PeerBackend::DisconnectPlayerQueue(int queue, int syncto)
 
    if (syncto < framecount) {
       Log("adjusting simulation to account for the fact that %d disconnected @ %d.\n", queue, syncto);
-      _sync.AdjustSimulation(syncto);
+      // -1 means no remote input was received. The earliest saved state is 0.
+      _sync.AdjustSimulation(MAX(0, syncto));
       Log("finished adjusting simulation.\n");
    }
 
